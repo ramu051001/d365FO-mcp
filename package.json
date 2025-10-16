@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js','755')\"",
-    "start": "node build/index.js"
+    "start": "node dist/server-http.js"
   },
   "files": [
     "build"
@@ -20,7 +20,7 @@
   "dependencies": {
     "@azure/msal-browser": "^4.8.0",
     "@azure/msal-node": "^3.4.0",
-    "@modelcontextprotocol/sdk": "^1.7.0",
+    "@modelcontextprotocol/sdk": "^1.20.0",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "zod": "^3.24.2"
