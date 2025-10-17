@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Dynamics365FO } from "./main.ts";
+import { Dynamics365FO } from "../src/main.js";
 
 /**
  * Register MCP tools:

@@ -26,8 +26,8 @@ import type { Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { Dynamics365FO } from "../src/main.ts";
-import { registerTools } from "../src/tools.ts";
+import { Dynamics365FO } from "../src/main.js";
+import { registerTools } from "../src/tools.js";
 
 const port = process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT, 10) : 3000;
 
