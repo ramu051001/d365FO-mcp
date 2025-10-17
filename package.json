@@ -7,9 +7,9 @@
     "dynamics365": "./build/index.js"
   },
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js','755')\"",
-    "start": "node dist/server-http.js"
-  },
+  "build": "tsc",
+  "start": "node build/scripts/server-http.js"
+},
   "files": [
     "build"
   ],

@@ -1,15 +1,3 @@
-/**
- * Dynamics 365 Finance & Operations (FO) helper
- *
- * - Authenticates with Azure AD using client credentials (MSAL)
- * - Calls FO OData endpoints under /data (e.g., data/CustomersV3)
- * - Supports OData query building ($filter, $select, $top, $orderby, extra)
- * - Supports following @odata.nextLink (fetchAllPages)
- * - Masks tokens in logs
- *
- * Note: This file is FO-specific (no Dataverse/CE code paths).
- */
-
 import { ConfidentialClientApplication } from "@azure/msal-node";
 import type { Configuration, ClientCredentialRequest } from "@azure/msal-node";
 import dotenv from "dotenv";
@@ -146,7 +134,6 @@ export class Dynamics365FO {
           response.headers.forEach((v, k) => (rawHeaders[k] = v));
           console.error("[Dynamics365FO] Response headers:", rawHeaders);
         } catch (_) {
-          // no-op
         }
         throw new Error(`API request failed: ${response.status} ${response.statusText} - ${text}`);
       }
@@ -158,8 +145,6 @@ export class Dynamics365FO {
       throw err;
     }
   }
-  
-
   /**
    * Build an OData query string from options.
    */
