@@ -20,6 +20,9 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import cors from "cors";
+app.use(cors());
+
 import express from "express";
 import type { Request, Response } from "express";
 
@@ -67,6 +70,7 @@ if (!process.env.DISABLE_MCP || process.env.DISABLE_MCP === "false") {
 }
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 // Helper to normalize response shapes to a single record (or null)

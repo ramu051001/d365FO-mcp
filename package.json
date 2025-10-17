@@ -7,9 +7,9 @@
     "dynamics365": "./build/index.js"
   },
   "scripts": {
-  "build": "tsc",
-  "start": "node build/scripts/server-http.js"
-},
+    "build": "tsc",
+    "start": "node build/scripts/server-http.js"
+  },
   "files": [
     "build"
   ],
@@ -21,11 +21,13 @@
     "@azure/msal-browser": "^4.8.0",
     "@azure/msal-node": "^3.4.0",
     "@modelcontextprotocol/sdk": "^1.20.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^22.18.10",
     "ts-node": "^10.9.2",
