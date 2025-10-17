@@ -29,7 +29,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { Dynamics365FO } from "../src/main.js";
 import { registerTools } from "../src/tools.js";
 
-const port = process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT, 10) : 3000;
+const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 const clientId = process.env.CLIENT_ID || "";
 const clientSecret = process.env.CLIENT_SECRET || "";
