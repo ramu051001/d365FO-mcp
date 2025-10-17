@@ -1,20 +1,16 @@
 /**
  * Combined HTTP wrapper + MCP server
  *
- * - Starts an MCP server (stdio transport) and registers tools from `src/tools.ts`
+ * - Starts an MCP server (HTTP transport) and registers tools from `src/tools.ts`
+ * - **Exposes the remote MCP endpoint at /mcp**
  * - Also exposes a small HTTP API for quick testing:
- *    GET  /customers/:accountNum
- *    GET  /customers? (supports $filter or filter, $select or select)
- *    GET  /vendors/:vendorAccount
- *    GET  /vendors? (supports $filter or filter, $select or select)
- *
- * Run (dev):
- *   npx ts-node --esm scripts/server-http.ts
+ * GET  /customers/:accountNum
+ * GET  /customers? (supports $filter or filter, $select or select)
+ * GET  /vendors/:vendorAccount
+ * GET  /vendors? (supports $filter or filter, $select or select)
  *
  * Notes:
- * - Local imports use .ts extensions so ts-node --esm can resolve them.
- * - This will connect the MCP server to process.stdin/stdout (StdioServerTransport).
- *   If you don't want the stdio MCP transport, set env var `DISABLE_MCP=true`.
+ * - This uses the StreamableHTTPServerTransport for remote access, accessible at /mcp.
  */
 
 import dotenv from "dotenv";
@@ -24,8 +20,11 @@ import express from "express";
 import type { Request, Response } from "express";
 import cors from "cors";
 
+// Required for sessionIdGenerator
+import { randomUUID } from "node:crypto"; 
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"; 
 
 import { Dynamics365FO } from "../src/main.js";
 import { registerTools } from "../src/tools.js";
@@ -52,24 +51,36 @@ const server = new McpServer({
 // Register tools on the MCP server (uses your src/tools.ts)
 registerTools(server, fo);
 
-// Optionally connect the MCP server to stdio transport (default enabled).
-if (!process.env.DISABLE_MCP || process.env.DISABLE_MCP === "false") {
-  (async () => {
-    try {
-      const transport = new StdioServerTransport();
-      await server.connect(transport);
-      console.error("MCP server registered and connected on stdio transport.");
-    } catch (err) {
-      console.error("Failed to connect MCP server on stdio transport:", err);
-    }
-  })();
-} else {
-  console.error("MCP stdio transport disabled via DISABLE_MCP=true");
-}
-
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// --- REMOTE MCP TRANSPORT SETUP ---
+
+// Wrap setup in async IIFE to allow use of await for server.connect()
+(async () => {
+    try {
+        const mcpTransport = new StreamableHTTPServerTransport({ 
+            sessionIdGenerator: randomUUID, 
+        });
+        
+        await server.connect(mcpTransport); 
+
+        // FIX: Use 'as any' to bypass the compiler error (2339)
+        app.use("/mcp", (mcpTransport as any).requestHandler());
+        
+        // Start the Express server after successful MCP setup
+        app.listen(port, () => {
+            console.error(`FO HTTP + MCP wrapper listening at http://localhost:${port}`);
+            console.error("MCP remote server endpoint is ready at /mcp");
+        });
+
+    } catch (err) {
+        console.error("FATAL ERROR: Failed to start MCP server or listen to port:", err);
+        process.exit(1);
+    }
+})();
+
 
 // Helper to normalize response shapes to a single record (or null)
 function normalizeSingleRecord(resp: any): any | null {
@@ -200,9 +211,4 @@ app.get("/vendors", async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ error: (err as Error).message || String(err) });
     return;
   }
-});
-
-app.listen(port, () => {
-  console.error(`FO HTTP + MCP wrapper listening at http://localhost:${port}`);
-  console.error("MCP tools are registered; connect an MCP client over stdio to use them.");
 });
