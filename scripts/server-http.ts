@@ -20,16 +20,16 @@ import express from "express";
 import type { Request, Response } from "express";
 import cors from "cors";
 
-// Required for sessionIdGenerator
-import { randomUUID } from "node:crypto"; 
+import { randomUUID } from "node:crypto"; // Required for sessionIdGenerator
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"; 
 
-import { Dynamics365FO } from "../src/main.js";
+// FIX: Change local imports from .ts to .js to resolve TS5097
+import { Dynamics365FO } from "../src/main.js"; 
 import { registerTools } from "../src/tools.js";
 
-const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const port = process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT, 10) : 3000;
 
 const clientId = process.env.CLIENT_ID || "";
 const clientSecret = process.env.CLIENT_SECRET || "";
@@ -54,33 +54,6 @@ registerTools(server, fo);
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// --- REMOTE MCP TRANSPORT SETUP ---
-
-// Wrap setup in async IIFE to allow use of await for server.connect()
-(async () => {
-    try {
-        const mcpTransport = new StreamableHTTPServerTransport({ 
-            sessionIdGenerator: randomUUID, 
-        });
-        
-        await server.connect(mcpTransport); 
-
-        // FIX: Use 'as any' to bypass the compiler error (2339)
-        app.use("/mcp", (mcpTransport as any).requestHandler());
-        
-        // Start the Express server after successful MCP setup
-        app.listen(port, () => {
-            console.error(`FO HTTP + MCP wrapper listening at http://localhost:${port}`);
-            console.error("MCP remote server endpoint is ready at /mcp");
-        });
-
-    } catch (err) {
-        console.error("FATAL ERROR: Failed to start MCP server or listen to port:", err);
-        process.exit(1);
-    }
-})();
-
 
 // Helper to normalize response shapes to a single record (or null)
 function normalizeSingleRecord(resp: any): any | null {
@@ -212,3 +185,28 @@ app.get("/vendors", async (req: Request, res: Response): Promise<void> => {
     return;
   }
 });
+
+// --- REMOTE MCP TRANSPORT SETUP ---
+
+// Wrap the asynchronous setup logic in a self-executing async function (IIFE)
+(async () => {
+    try {
+        const mcpTransport = new StreamableHTTPServerTransport({ 
+            sessionIdGenerator: randomUUID, 
+        });
+        
+        await server.connect(mcpTransport); 
+
+        // Use 'as any' to bypass the type error (2339) and expose the handler
+        app.use("/mcp", (mcpTransport as any).requestHandler());
+        
+        // Start the Express server after successful MCP setup
+        app.listen(port, () => {
+            console.error(`FO HTTP + MCP wrapper listening at http://localhost:${port}`);
+            console.error("MCP remote server endpoint is ready at /mcp");
+        });
+
+    } catch (err) {
+        console.error("FATAL ERROR: Failed to start MCP server or listen to port:", err);
+    }
+})();
