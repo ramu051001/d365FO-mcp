@@ -61,7 +61,6 @@ export class Dynamics365FO {
 
   /**
    * Acquire or reuse an application access token.
-   * This is the function that was updated to fix the 'invalid_scope' error.
    */
   private async authenticate(): Promise<string> {
     try {
@@ -155,11 +154,11 @@ export class Dynamics365FO {
 
       if (!text) return null;
 
-      // ✅ Detect HTML payloads (login pages, redirects) - This is the original problem spot.
+      // ✅ Detect HTML payloads (login pages, redirects) - This suggests a D365 FO access/permission issue, even with status 200.
       if (text.startsWith("<!DOCTYPE html>") || text.includes("<html")) {
         console.error(`[Dynamics365FO] ERROR: Received HTML instead of JSON. This suggests a D365 FO access/permission issue, even with status 200.`);
         console.error(`[Dynamics365FO] HTML snippet: ${text.substring(0, 300)}...`);
-        throw new Error(`Response OK but received non-JSON payload: ${text.substring(0, 100)}...`);
+        throw new Error(`Response OK but received non-JSON payload (likely HTML/login page): ${text.substring(0, 100)}...`);
       }
 
       // ✅ Parse as JSON
