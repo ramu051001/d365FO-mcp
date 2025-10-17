@@ -1,3 +1,13 @@
+/**
+ * Dynamics 365 Finance & Operations (FO) helper
+ *
+ * - Authenticates with Azure AD using client credentials (MSAL)
+ * - Calls FO OData endpoints under /data (e.g., data/CustomersV3)
+ * - Supports OData query building ($filter, $select, $top, $orderby, extra)
+ * - Supports following @odata.nextLink (fetchAllPages)
+ * - Masks tokens in logs
+ */
+
 import { ConfidentialClientApplication } from "@azure/msal-node";
 import type { Configuration, ClientCredentialRequest } from "@azure/msal-node";
 import dotenv from "dotenv";
@@ -8,7 +18,8 @@ export class Dynamics365FO {
   private clientId: string;
   private clientSecret: string;
   private tenantId: string;
-  private d365Url: string;
+  // This variable will be the cleaned, base D365 URL (no trailing slash, no quotes).
+  private d365BaseUrl: string; 
   private msalInstance: ConfidentialClientApplication;
   private accessToken: string | null = null;
   private tokenExpiration: number | null = null;
@@ -28,7 +39,14 @@ export class Dynamics365FO {
     this.clientId = clientId;
     this.clientSecret = clientSecret;
     this.tenantId = tenantId;
-    this.d365Url = d365Url;
+    
+    // **CRITICAL FIX:** Guarantee a clean base URL here. 
+    // This removes surrounding quotes, leading/trailing whitespace, and any trailing commas or slashes.
+    let cleanedUrl = d365Url.trim().replace(/^['"]|['"]$/g, "");
+    // Aggressively remove all trailing slashes and commas
+    cleanedUrl = cleanedUrl.replace(/[,/]+$/, ""); 
+    
+    this.d365BaseUrl = cleanedUrl;
 
     const msalConfig: Configuration = {
       auth: {
@@ -43,15 +61,21 @@ export class Dynamics365FO {
 
   /**
    * Acquire or reuse an application access token.
-   * Scope uses the origin of d365Url (example: https://org.cloudax.dynamics.com/.default)
+   * This is the function that was updated to fix the 'invalid_scope' error.
    */
   private async authenticate(): Promise<string> {
-    const tokenRequest: ClientCredentialRequest = {
-      scopes: [`${new URL(this.d365Url).origin}/.default`],
-    };
-
     try {
+      // 1. Use the cleaned d365BaseUrl property
+      const resourceOrigin = this.d365BaseUrl;
+      
+      const tokenRequest: ClientCredentialRequest = {
+        // The scope must be constructed as 'https://<D365_BASE_URL>/.default' 
+        // We use the cleaned resourceOrigin which does NOT have a trailing slash or comma.
+        scopes: [`${resourceOrigin}/.default`],
+      };
+
       if (this.tokenExpiration && Date.now() < this.tokenExpiration) {
+        // console.error("✅ Reusing cached token.");
         return this.accessToken as string;
       }
 
@@ -65,26 +89,24 @@ export class Dynamics365FO {
           // Renew a few minutes before expiry
           this.tokenExpiration = response.expiresOn.getTime() - 3 * 60 * 1000;
         }
+        console.error("✅ Token acquired successfully and cached.");
+        return this.accessToken as string;
       } else {
         throw new Error("Token acquisition failed: response is null or invalid.");
       }
     } catch (error) {
-      // log to stderr (won't corrupt protocol)
-      console.error("Token acquisition failed:", error);
+      // Log to stderr
+      console.error("❌ Failed to authenticate with Azure AD:", error);
       throw new Error(
         `Failed to authenticate with Dynamics 365 FO: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
     }
-
-    return this.accessToken as string;
   }
 
   /**
    * Makes an API request to FO.
-   * Accepts either a relative endpoint (e.g. "data/CustomersV3?$top=5")
-   * or an absolute URL (e.g. @odata.nextLink).
    */
   private async makeApiRequest(
     endpoint: string,
@@ -94,9 +116,11 @@ export class Dynamics365FO {
   ): Promise<any> {
     const token = await this.authenticate();
 
-    const url = endpoint.match(/^https?:\/\//i)
+    // ✅ Clean URL handling (no double slashes)
+    // d365BaseUrl is guaranteed to have NO trailing slash.
+    const url = endpoint.startsWith("http")
       ? endpoint
-      : `${this.d365Url.endsWith("/") ? this.d365Url.slice(0, -1) : this.d365Url}/${endpoint.replace(/^\//, "")}`;
+      : `${this.d365BaseUrl}/${endpoint.replace(/^\//, "")}`;
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -109,8 +133,6 @@ export class Dynamics365FO {
 
     // Mask token for logs
     const masked = { ...headers, Authorization: "Bearer [REDACTED]" };
-
-    // IMPORTANT: write logs to stderr so stdout (JSON-RPC) stays clean
     console.error(`[Dynamics365FO] Request: ${method} ${url}`);
     console.error("[Dynamics365FO] Headers:", masked);
     if (body) console.error("[Dynamics365FO] Body:", body);
@@ -122,29 +144,36 @@ export class Dynamics365FO {
         body: body ? JSON.stringify(body) : undefined,
       });
 
-      // Read text so we can log non-JSON responses in errors
       const text = await response.text().catch(() => null);
 
       if (!response.ok) {
         console.error(`[Dynamics365FO] Request failed: ${response.status} ${response.statusText}`);
         console.error(`[Dynamics365FO] URL: ${url}`);
         console.error(`[Dynamics365FO] Response body:`, text);
-        try {
-          const rawHeaders: Record<string, string> = {};
-          response.headers.forEach((v, k) => (rawHeaders[k] = v));
-          console.error("[Dynamics365FO] Response headers:", rawHeaders);
-        } catch (_) {
-        }
         throw new Error(`API request failed: ${response.status} ${response.statusText} - ${text}`);
       }
 
       if (!text) return null;
-      return JSON.parse(text);
+
+      // ✅ Detect HTML payloads (login pages, redirects) - This is the original problem spot.
+      if (text.startsWith("<!DOCTYPE html>") || text.includes("<html")) {
+        console.error(`[Dynamics365FO] ERROR: Received HTML instead of JSON. This suggests a D365 FO access/permission issue, even with status 200.`);
+        console.error(`[Dynamics365FO] HTML snippet: ${text.substring(0, 300)}...`);
+        throw new Error(`Response OK but received non-JSON payload: ${text.substring(0, 100)}...`);
+      }
+
+      // ✅ Parse as JSON
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`Response OK but received non-JSON payload: ${text.substring(0, 100)}...`);
+      }
     } catch (err) {
       console.error(`[Dynamics365FO] API request to ${url} failed:`, err);
       throw err;
     }
   }
+
   /**
    * Build an OData query string from options.
    */
@@ -158,7 +187,7 @@ export class Dynamics365FO {
     const parts: string[] = [];
 
     if (opts?.filter) parts.push(`$filter=${encodeURIComponent(opts.filter)}`);
-    if (opts?.select && opts.select.length) parts.push(`$select=${encodeURIComponent(opts.select.join(","))}`);
+    if (opts?.select?.length) parts.push(`$select=${encodeURIComponent(opts.select.join(","))}`);
     if (opts?.top && opts.top > 0) parts.push(`$top=${opts.top}`);
     if (opts?.orderby) parts.push(`$orderby=${encodeURIComponent(opts.orderby)}`);
 
@@ -168,19 +197,11 @@ export class Dynamics365FO {
       }
     }
 
-    return parts.length ? parts.join("&") : "";
+    return parts.join("&");
   }
 
   /**
-   * Fetches customers from Dynamics 365 FO (CustomersV3).
-   *
-   * Options:
-   *  - filter: OData $filter expression (e.g. "contains(Name,'Contoso')")
-   *  - select: array of fields to $select
-   *  - top: $top
-   *  - orderby: $orderby expression
-   *  - crossCompany: adds cross-company=true query param when true
-   *  - fetchAllPages: follows @odata.nextLink to combine pages (beware large datasets)
+   * Fetch customers (supports pagination).
    */
   public async getCustomers(options?: {
     filter?: string;
@@ -191,11 +212,9 @@ export class Dynamics365FO {
     fetchAllPages?: boolean;
   }): Promise<any> {
     const baseEndpoint = "data/CustomersV3";
-
     const extraParams: Record<string, string> = {};
-    if (options?.crossCompany) {
-      extraParams["cross-company"] = "true";
-    }
+
+    if (options?.crossCompany) extraParams["cross-company"] = "true";
 
     const query = this.buildODataQuery({
       filter: options?.filter,
@@ -206,7 +225,6 @@ export class Dynamics365FO {
     });
 
     const endpointWithQuery = query ? `${baseEndpoint}?${query}` : baseEndpoint;
-
     if (!options?.fetchAllPages) {
       return this.makeApiRequest(endpointWithQuery, "GET");
     }
@@ -214,34 +232,23 @@ export class Dynamics365FO {
     const results: any[] = [];
     let resp = await this.makeApiRequest(endpointWithQuery, "GET");
 
-    if (Array.isArray(resp?.value)) {
-      results.push(...resp.value);
-    } else if (Array.isArray(resp)) {
-      results.push(...resp);
-    } else {
-      return resp;
-    }
+    if (Array.isArray(resp?.value)) results.push(...resp.value);
+    else if (Array.isArray(resp)) results.push(...resp);
+    else return resp;
 
-    let nextLink = resp["@odata.nextLink"] || resp["@odata.nextlink"] || null;
+    let nextLink = resp["@odata.nextLink"] || resp["@odata.nextlink"];
     while (nextLink) {
       const page = await this.makeApiRequest(nextLink, "GET");
-      if (Array.isArray(page?.value)) {
-        results.push(...page.value);
-      } else if (Array.isArray(page)) {
-        results.push(...page);
-      } else {
-        break;
-      }
-      nextLink = page["@odata.nextLink"] || page["@odata.nextlink"] || null;
+      if (Array.isArray(page?.value)) results.push(...page.value);
+      else if (Array.isArray(page)) results.push(...page);
+      else break;
+      
+      nextLink = page["@odata.nextLink"] || page["@odata.nextlink"];
     }
 
     return { value: results };
   }
 
-  /**
-   * Convenience: fetch customers by name (simple contains).
-   * Uses FO field 'Name' by default.
-   */
   public async getCustomersByName(name: string, options?: {
     select?: string[];
     top?: number;
@@ -250,39 +257,18 @@ export class Dynamics365FO {
   }): Promise<any> {
     const safe = name.replace(/'/g, "''");
     const filter = `contains(Name,'${safe}')`;
-
-    return this.getCustomers({
-      ...options,
-      filter,
-    });
+    return this.getCustomers({ ...options, filter });
   }
 
-  /**
-   * Convenience: fetch customer by account identifier (uses FO field 'CustomerAccount').
-   *
-   * Note: FO schema uses `CustomerAccount` for the account identifier (not AccountNum).
-   */
   public async getCustomerByAccountNum(accountNum: string, options?: {
     select?: string[];
     crossCompany?: boolean;
   }): Promise<any> {
-    // Use the FO field name 'CustomerAccount' for the equality filter
     const safe = accountNum.replace(/'/g, "''");
     const filter = `CustomerAccount eq '${safe}'`;
-
-    return this.getCustomers({
-      ...options,
-      filter,
-      top: 1,
-    });
+    return this.getCustomers({ ...options, filter, top: 1 });
   }
 
-  /**
-   * Fetch vendors from Dynamics 365 FO.
-   *
-   * - collectionName: "Vendors" by default. Some environments use "VendorsV3" — change if required.
-   * - identifier field assumed to be "VendorAccount".
-   */
   public async getVendors(options?: {
     filter?: string;
     select?: string[];
@@ -291,13 +277,9 @@ export class Dynamics365FO {
     crossCompany?: boolean;
     fetchAllPages?: boolean;
   }): Promise<any> {
-    // Change this value if your FO metadata shows a different entity set like "VendorsV3"
     const baseEndpoint = "data/VendorsV3";
-
     const extraParams: Record<string, string> = {};
-    if (options?.crossCompany) {
-      extraParams["cross-company"] = "true";
-    }
+    if (options?.crossCompany) extraParams["cross-company"] = "true";
 
     const query = this.buildODataQuery({
       filter: options?.filter,
@@ -308,56 +290,34 @@ export class Dynamics365FO {
     });
 
     const endpointWithQuery = query ? `${baseEndpoint}?${query}` : baseEndpoint;
-
-    if (!options?.fetchAllPages) {
-      return this.makeApiRequest(endpointWithQuery, "GET");
-    }
+    if (!options?.fetchAllPages) return this.makeApiRequest(endpointWithQuery, "GET");
 
     const results: any[] = [];
     let resp = await this.makeApiRequest(endpointWithQuery, "GET");
 
-    if (Array.isArray(resp?.value)) {
-      results.push(...resp.value);
-    } else if (Array.isArray(resp)) {
-      results.push(...resp);
-    } else {
-      return resp;
-    }
+    if (Array.isArray(resp?.value)) results.push(...resp.value);
+    else if (Array.isArray(resp)) results.push(...resp);
+    else return resp;
 
-    let nextLink = resp["@odata.nextLink"] || resp["@odata.nextlink"] || null;
+    let nextLink = resp["@odata.nextLink"] || resp["@odata.nextlink"];
     while (nextLink) {
       const page = await this.makeApiRequest(nextLink, "GET");
-      if (Array.isArray(page?.value)) {
-        results.push(...page.value);
-      } else if (Array.isArray(page)) {
-        results.push(...page);
-      } else {
-        break;
-      }
-      nextLink = page["@odata.nextLink"] || page["@odata.nextlink"] || null;
+      if (Array.isArray(page?.value)) results.push(...page.value);
+      else if (Array.isArray(page)) results.push(...page);
+      else break;
+      
+      nextLink = page["@odata.nextLink"] || page["@odata.nextlink"];
     }
 
     return { value: results };
   }
 
-  // Replace the existing getVendorByAccountNum implementation with this:
-
-  /**
-   * Convenience: fetch vendor by vendor account identifier (uses FO field 'VendorAccountNumber').
-   */
   public async getVendorByAccountNum(vendorAccount: string, options?: {
     select?: string[];
     crossCompany?: boolean;
   }): Promise<any> {
-    // Use the FO field name 'VendorAccountNumber' for the equality filter
     const safe = vendorAccount.replace(/'/g, "''");
     const filter = `VendorAccountNumber eq '${safe}'`;
-
-    return this.getVendors({
-      ...options,
-      filter,
-      top: 1,
-    });
+    return this.getVendors({ ...options, filter, top: 1 });
   }
-  
 }
